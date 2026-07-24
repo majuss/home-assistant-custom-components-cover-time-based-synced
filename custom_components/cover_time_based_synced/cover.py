@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from homeassistant.core import callback
 from homeassistant.helpers import entity_platform
-from homeassistant.helpers.event import async_track_utc_time_change, async_track_time_interval
+from homeassistant.helpers.event import async_track_utc_time_change, async_track_time_interval, async_track_state_change_event
 from homeassistant.components.cover import (
     ATTR_CURRENT_POSITION,
     ATTR_POSITION,
@@ -128,7 +128,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
         self._open_switch_entity_id = open_switch_entity_id
         self._close_switch_entity_id = close_switch_entity_id
         self._send_stop_at_ends = send_stop_at_ends
-        self._assume_uncertain_position = True 
+        self._assume_uncertain_position = True
         self._target_position = 0
         self._processing_known_position = False
         self._unique_id = device_id
@@ -139,6 +139,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
             self._name = device_id
 
         self._unsubscribe_auto_updater = None
+        self._unsubscribe_state_listener = None
 
         self.tc = TravelCalculator(self._travel_time_down, self._travel_time_up)
 
@@ -194,12 +195,16 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
                 self._target_position = 0
                 self.tc.start_travel_down()
             self.start_auto_updater()
-            
+
 
     async def async_added_to_hass(self):
         """ Only cover position and confidence in that matters."""
         """ The rest is calculated from this attribute.        """
-        self.hass.bus.async_listen("state_changed", self._handle_state_changed)
+        self._unsubscribe_state_listener = async_track_state_change_event(
+            self.hass,
+            [self._open_switch_entity_id, self._close_switch_entity_id],
+            self._handle_state_changed,
+        )
         old_state = await self.async_get_last_state()
         _LOGGER.debug(self._name + ': ' + 'async_added_to_hass :: oldState %s', old_state)
         if (old_state is not None and self.tc is not None and old_state.attributes.get(ATTR_CURRENT_POSITION) is not None):
@@ -210,6 +215,12 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
          else:
            self._assume_uncertain_position = str(old_state.attributes.get(ATTR_UNCONFIRMED_STATE)) == str(True)
 
+    async def async_will_remove_from_hass(self):
+        """Clean up listeners when entity is removed."""
+        if self._unsubscribe_state_listener is not None:
+            self._unsubscribe_state_listener()
+            self._unsubscribe_state_listener = None
+        self.stop_auto_updater()
 
     def _handle_my_button(self):
         """Handle the MY button press"""
@@ -240,7 +251,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
         if self._travel_time_down is not None:
             attr[CONF_TRAVELLING_TIME_DOWN] = self._travel_time_down
         if self._travel_time_up is not None:
-            attr[CONF_TRAVELLING_TIME_UP] = self._travel_time_up 
+            attr[CONF_TRAVELLING_TIME_UP] = self._travel_time_up
         attr[ATTR_UNCONFIRMED_STATE] = str(self._assume_uncertain_position)
         return attr
 
@@ -270,7 +281,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
     def assumed_state(self):
         """Return True unless we have set position with confidence through send_know_position service."""
         return self._assume_uncertain_position
- 
+
     async def async_set_cover_position(self, **kwargs):
        """Move the cover to a specific position."""
        if ATTR_POSITION in kwargs:
@@ -293,6 +304,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
     async def async_stop_cover(self, **kwargs):
         """Turn the device stop."""
         _LOGGER.debug(self._name + ': ' + 'async_stop_cover')
+        self._handle_my_button()
         await self._async_handle_command(SERVICE_STOP_COVER)
 
     async def set_position(self, position):
@@ -368,7 +380,7 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
         if position_type not in [ATTR_POSITION_TYPE_TARGET, ATTR_POSITION_TYPE_CURRENT]:
           raise ValueError(ATTR_POSITION_TYPE + " must be one of %s, %s", ATTR_POSITION_TYPE_TARGET,ATTR_POSITION_TYPE_CURRENT)
         _LOGGER.debug(self._name + ': ' + 'set_known_position :: position  %d, confident %s, position_type %s, self.tc.is_traveling%s', position, str(confident), position_type, str(self.tc.is_traveling()))
-        self._assume_uncertain_position = not confident 
+        self._assume_uncertain_position = not confident
         self._processing_known_position = True
         if position_type == ATTR_POSITION_TYPE_TARGET:
           self._target_position = position
@@ -426,5 +438,3 @@ class CoverTimeBased(CoverEntity, RestoreEntity):
 
         # Update state of entity
         self.async_write_ha_state()
-
-# END
